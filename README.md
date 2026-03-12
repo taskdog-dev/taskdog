@@ -1,6 +1,6 @@
 # 🐕 TaskDog
 
-### Give it a task. Get a PR.
+### The sheepdog for your engineering backlog.
 
 TaskDog is an autonomous AI engineer that turns backlog tasks into pull requests.
 
