@@ -82,6 +82,7 @@ class WorkspaceManager:
                 ["git", "checkout", "-b", branch],
                 cwd=ws_path,
             )
+            await self._configure_git_identity(ws_path)
 
         return WorkspaceInfo(
             issue_id=issue.id,
@@ -157,11 +158,11 @@ class WorkspaceManager:
             timeout=120,
         )
 
-        # Create PR via GitHub API
+        # Create PR via GitHub API — prefer GITHUB_API_TOKEN (service identity) over GITHUB_TOKEN
         import os
-        token = os.environ.get("GITHUB_TOKEN")
+        token = os.environ.get("GITHUB_API_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if not token:
-            logger.warning("post_run.no_token", msg="Cannot create PR without GITHUB_TOKEN")
+            logger.warning("post_run.no_token", msg="Cannot create PR without GITHUB_TOKEN or GITHUB_API_TOKEN")
             return None
 
         clone_url = self._config.workspace.git_clone_url or ""
@@ -244,6 +245,17 @@ class WorkspaceManager:
                 ["git", "remote", "add", "origin", url],
                 cwd=ws_path,
             )
+
+    async def _configure_git_identity(self, ws_path: Path) -> None:
+        """Set local git user.name and user.email if service identity is configured."""
+        name = self._config.workspace.service_name
+        email = self._config.workspace.service_email
+        if name:
+            await self._run_cmd(["git", "config", "user.name", name], cwd=ws_path)
+        if email:
+            await self._run_cmd(["git", "config", "user.email", email], cwd=ws_path)
+        if name or email:
+            logger.info("workspace.git_identity_set", name=name, email=email)
 
     async def _git_clone(self, ws_path: Path) -> None:
         url = self._auth_url()

@@ -54,6 +54,8 @@ class WorkspaceConfig(BaseModel):
     git_default_branch: str = "main"
     branch_pattern: str = "{issue_id}-{slug}"  # {issue_id}, {slug}, {identifier}
     branch_prefix: str = "taskdog"  # prepended as prefix/
+    service_name: str | None = None   # git user.name for service identity commits
+    service_email: str | None = None  # git user.email for service identity commits
 
 
 class HooksConfig(BaseModel):
@@ -85,6 +87,20 @@ class TaskdogConfig(BaseModel):
     @property
     def agent_env(self) -> dict[str, str]:
         return {k: _resolve_env_vars(v) for k, v in self.agent.env.items()}
+
+    @property
+    def service_git_env(self) -> dict[str, str]:
+        """Git author/committer env vars for the service identity, if configured."""
+        env: dict[str, str] = {}
+        name = self.workspace.service_name
+        email = self.workspace.service_email
+        if name:
+            env["GIT_AUTHOR_NAME"] = name
+            env["GIT_COMMITTER_NAME"] = name
+        if email:
+            env["GIT_AUTHOR_EMAIL"] = email
+            env["GIT_COMMITTER_EMAIL"] = email
+        return env
 
 
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
