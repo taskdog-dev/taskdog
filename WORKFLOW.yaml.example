@@ -1,0 +1,51 @@
+---
+tracker:
+  kind: "github"
+  api_key: $GITHUB_TOKEN
+  owner: "your-org"
+  repo: "your-repo"
+  label: "taskdog"
+  active_states: ["open"]
+  terminal_states: ["closed"]
+
+polling:
+  interval_ms: 30000
+
+workspace:
+  root: "~/.taskdog/workspaces"
+  git_clone_url: "https://github.com/your-org/your-repo.git"
+  git_default_branch: "main"
+
+agent:
+  max_concurrent: 1
+  max_turns: 20
+  model: "sonnet"
+  stall_timeout_ms: 600000
+  env:
+    ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
+
+---
+
+You are an autonomous software engineer working on issue **{{ issue.identifier }}**: "{{ issue.title }}".
+
+## Issue Details
+
+{{ issue.description }}
+
+{% if issue.labels %}
+**Labels**: {{ issue.labels | join(', ') }}
+{% endif %}
+
+{% if attempt %}
+**Note**: This is retry attempt #{{ attempt }}. Review previous work in this workspace and continue where you left off.
+{% endif %}
+
+## Instructions
+
+1. Read the codebase to understand the project structure and conventions
+2. Implement the changes described in the issue
+3. Write or update tests as needed
+4. Ensure all existing tests still pass
+5. Create a clean commit with a descriptive message referencing the issue
+
+Focus on correct, minimal changes. Do not refactor unrelated code.

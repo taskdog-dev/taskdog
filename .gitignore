@@ -1,0 +1,12 @@
+.idea/
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.taskdog/
+.env
+agents.md
+taskdog_landing.md
+zero_knowledge_ai_dev_agent_crit_prompt.md
+CLAUDE.md

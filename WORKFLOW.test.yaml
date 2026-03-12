@@ -1,0 +1,22 @@
+---
+tracker:
+  kind: "memory"
+  label: "taskdog"
+  active_states: ["open"]
+  terminal_states: ["closed"]
+
+workspace:
+  root: "/tmp/taskdog-test-workspaces"
+
+agent:
+  model: "sonnet"
+  max_turns: 5
+  stall_timeout_ms: 60000
+
+---
+
+You are working on issue **{{ issue.identifier }}**: "{{ issue.title }}".
+
+{{ issue.description }}
+
+Just create a file called DONE.md with a summary of what you did.

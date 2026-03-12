@@ -1,0 +1,34 @@
+services:
+  taskdog:
+    build: .
+    volumes:
+      # Source code — live reload on changes
+      - ./src:/app/src
+      - ./WORKFLOW.yaml:/app/WORKFLOW.yaml:ro
+      - ./WORKFLOW.yaml.example:/app/WORKFLOW.yaml.example:ro
+      - ./WORKFLOW.test.yaml:/app/WORKFLOW.test.yaml:ro
+
+      # Claude auth from host
+      - ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - ~/.claude/settings.json:/root/.claude/settings.json:ro
+
+      # Agent workspaces (persist across restarts)
+      - taskdog-workspaces:/root/.taskdog/workspaces
+
+      # Git config from host (for commits)
+      - ~/.gitconfig:/root/.gitconfig:ro
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    # Override CMD for different modes:
+    #   Live reload daemon (default):
+    #     docker compose up
+    #   One-shot run:
+    #     docker compose run taskdog taskdog run --issue 1 -w /app/WORKFLOW.yaml
+    #   Validate config:
+    #     docker compose run taskdog taskdog validate -w /app/WORKFLOW.yaml
+    #   Dry run:
+    #     docker compose run taskdog taskdog run --issue 1 --dry-run -w /app/WORKFLOW.yaml
+
+volumes:
+  taskdog-workspaces:
