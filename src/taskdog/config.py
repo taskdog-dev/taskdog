@@ -53,6 +53,7 @@ class WorkspaceConfig(BaseModel):
     git_default_branch: str = "main"
     branch_pattern: str = "{issue_id}-{slug}"  # {issue_id}, {slug}, {identifier}
     branch_prefix: str = "taskdog"  # prepended as prefix/
+    pr_labels: list[str] = Field(default_factory=lambda: ["taskdog"])
 
 
 class HooksConfig(BaseModel):
