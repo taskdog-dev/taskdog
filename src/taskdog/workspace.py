@@ -56,7 +56,7 @@ class WorkspaceManager:
         if not str(ws_path).startswith(str(self._root)):
             raise ValueError(f"Workspace path escapes root: {ws_path}")
 
-        # Always start fresh — remove stale workspace from previous runs
+        # Clean workspace dir
         if ws_path.exists():
             shutil.rmtree(str(ws_path), ignore_errors=True)
             logger.info("workspace.cleaned", path=str(ws_path))
@@ -75,13 +75,27 @@ class WorkspaceManager:
             issue,
         )
 
-        # Ensure authenticated remote
+        # Ensure authenticated remote and checkout branch
         if (ws_path / ".git").exists():
             await self._ensure_auth_remote(ws_path)
-            await self._run_cmd(
-                ["git", "checkout", "-b", branch],
-                cwd=ws_path,
-            )
+
+            # Check if branch already exists on remote (previous run)
+            remote_exists = await self._remote_branch_exists(ws_path, branch)
+            if remote_exists:
+                logger.info("workspace.resuming_branch", branch=branch)
+                await self._run_cmd(
+                    ["git", "fetch", "origin", f"{branch}:{branch}"],
+                    cwd=ws_path,
+                )
+                await self._run_cmd(
+                    ["git", "checkout", branch],
+                    cwd=ws_path,
+                )
+            else:
+                await self._run_cmd(
+                    ["git", "checkout", "-b", branch],
+                    cwd=ws_path,
+                )
 
         return WorkspaceInfo(
             issue_id=issue.id,
@@ -90,6 +104,17 @@ class WorkspaceManager:
             created_at=datetime.now(timezone.utc),
             git_branch=branch,
         )
+
+    async def _remote_branch_exists(self, ws_path: Path, branch: str) -> bool:
+        """Check if a branch exists on the remote."""
+        try:
+            await self._run_cmd(
+                ["git", "ls-remote", "--exit-code", "--heads", "origin", branch],
+                cwd=ws_path,
+            )
+            return True
+        except RuntimeError:
+            return False
 
     async def _current_branch(self, ws_path: Path) -> str | None:
         """Get the current git branch name."""
@@ -200,6 +225,18 @@ class WorkspaceManager:
                 pr_url = resp.json()["html_url"]
                 logger.info("post_run.pr_created", url=pr_url)
                 return pr_url
+            elif resp.status_code == 422 and "already exists" in resp.text:
+                # PR already exists — find and return it
+                logger.info("post_run.pr_exists", branch=branch)
+                search = await client.get(
+                    f"/repos/{owner}/{repo}/pulls",
+                    params={"head": f"{owner}:{branch}", "state": "open"},
+                )
+                if search.status_code == 200 and search.json():
+                    pr_url = search.json()[0]["html_url"]
+                    logger.info("post_run.pr_found", url=pr_url)
+                    return pr_url
+                return None
             else:
                 logger.error(
                     "post_run.pr_failed",

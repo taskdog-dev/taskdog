@@ -129,8 +129,8 @@ async def _dispatch_issue(
     config: TaskdogConfig,
     tracker: object,
     issue: NormalizedIssue,
-) -> bool:
-    """Run agent on a single issue. Returns True on success."""
+) -> tuple[bool, str | None]:
+    """Run agent on a single issue. Returns (success, pr_url)."""
     log = structlog.get_logger("taskdog.dispatch")
     events = LogEventBus()
     tc = config.tracker
@@ -180,12 +180,23 @@ async def _dispatch_issue(
 
     if result.success:
         log.info("run.success", issue_id=issue.id)
-        pr_url = await ws_mgr.push_and_create_pr(workspace, issue)
-        if pr_url:
-            log.info("pr.created", url=pr_url)
 
-        # Transition: in-progress → review (PR awaiting review) or done (no PR)
-        target_label = tc.label_review if pr_url else tc.label_done
+        pr_url = None
+        try:
+            pr_url = await ws_mgr.push_and_create_pr(workspace, issue)
+            if pr_url:
+                log.info("pr.created", url=pr_url)
+        except Exception:
+            log.exception("push_pr.failed", issue_id=issue.id)
+
+        # Transition: in-progress → review/done/failed depending on push result
+        if pr_url:
+            target_label = tc.label_review
+        elif await ws_mgr.has_new_commits(workspace):
+            # Had commits but push/PR failed
+            target_label = tc.label_failed
+        else:
+            target_label = tc.label_done
         try:
             await tracker.remove_label(issue.id, tc.label_in_progress)
             await tracker.set_label(issue.id, target_label)
@@ -195,7 +206,12 @@ async def _dispatch_issue(
         # Post summary comment
         duration_s = result.duration_ms / 1000.0
         cost_str = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
-        status = "PR created, awaiting review." if pr_url else "completed (no PR created)."
+        if pr_url:
+            status = "PR created, awaiting review."
+        elif target_label == tc.label_failed:
+            status = "agent succeeded but push/PR failed."
+        else:
+            status = "completed (no PR created)."
         comment_lines = [
             f"**TaskDog** {status}",
             "",
@@ -210,7 +226,7 @@ async def _dispatch_issue(
         except Exception:
             log.warning("comment.failed", issue_id=issue.id)
 
-        return True
+        return target_label != tc.label_failed, pr_url
     else:
         log.error("run.failed", issue_id=issue.id, error=result.error_message)
 
@@ -221,7 +237,7 @@ async def _dispatch_issue(
         except Exception:
             log.warning("label.transition_failed", issue_id=issue.id, state="failed")
 
-        return False
+        return False, None
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +275,7 @@ async def _run_single(
             typer.echo("--- End Prompt ---\n")
             return
 
-        success = await _dispatch_issue(config, tracker, issue)
+        success, _pr_url = await _dispatch_issue(config, tracker, issue)
         if not success:
             raise typer.Exit(1)
 
@@ -329,12 +345,67 @@ async def _cleanup_stale_in_progress(
             log.warning("stale_cleanup.update_failed", issue_id=issue.id)
 
 
+async def _check_review_prs(
+    config: TaskdogConfig,
+    tracker: object,
+    review_prs: dict[str, str],
+    log: object,
+) -> None:
+    """Check merge status of all tracked review PRs and transition labels accordingly.
+
+    Also discovers PRs for any ``label_review`` issues not yet in ``review_prs``
+    (e.g. after a daemon restart).
+    """
+    tc = config.tracker
+
+    # Discover PRs for label_review issues not yet tracked (e.g. after daemon restart)
+    if hasattr(tracker, "find_pr_for_issue"):
+        try:
+            review_issues = await tracker.fetch_candidates(
+                active_states=tc.active_states,
+                label=tc.label_review,
+            )
+            for issue in review_issues:
+                if issue.id not in review_prs:
+                    pr_number = await tracker.find_pr_for_issue(issue.identifier)
+                    if pr_number:
+                        log.info("pr.rediscovered", issue_id=issue.id, pr=pr_number)
+                        review_prs[issue.id] = pr_number
+        except Exception:
+            log.warning("pr.rediscovery_failed")
+
+    for issue_id, pr_number in list(review_prs.items()):
+        try:
+            status = await tracker.check_pr_merged(pr_number)
+            if status == "merged":
+                log.info("pr.merged", issue_id=issue_id, pr=pr_number)
+                await tracker.remove_label(issue_id, tc.label_review)
+                await tracker.set_label(issue_id, tc.label_done)
+                await tracker.close_issue(issue_id)
+                await tracker.add_comment(
+                    issue_id,
+                    "**TaskDog**: PR merged — issue resolved and closed.",
+                )
+                del review_prs[issue_id]
+            elif status == "closed":
+                log.warning("pr.closed_unmerged", issue_id=issue_id, pr=pr_number)
+                await tracker.remove_label(issue_id, tc.label_review)
+                await tracker.set_label(issue_id, tc.label_failed)
+                await tracker.add_comment(
+                    issue_id,
+                    "**TaskDog**: PR was closed without merging — marked as failed.",
+                )
+                del review_prs[issue_id]
+        except Exception:
+            log.warning("pr.check_failed", issue_id=issue_id, pr=pr_number)
+
+
 async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
     repo_id = f"{config.tracker.model_extra.get('owner', '?')}/{config.tracker.model_extra.get('repo', '?')}"
     log = structlog.get_logger("taskdog.daemon").bind(repo=repo_id)
     active: set[str] = set()
-    processed: set[str] = set()
     agent_tasks: set[asyncio.Task] = set()
+    review_prs: dict[str, str] = {}  # issue_id → pr_number
     max_concurrent = config.agent.max_concurrent
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -356,12 +427,14 @@ async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
     async def _run_agent(issue: NormalizedIssue) -> None:
         async with semaphore:
             try:
-                await _dispatch_issue(config, tracker, issue)
+                _success, pr_url = await _dispatch_issue(config, tracker, issue)
+                if pr_url:
+                    pr_number = pr_url.split("/pull/")[-1]
+                    review_prs[issue.id] = pr_number
             except Exception:
                 log.exception("dispatch.error", issue_id=issue.id)
             finally:
                 active.discard(issue.id)
-                processed.add(issue.id)
 
     try:
         while not shutdown.is_set():
@@ -384,7 +457,6 @@ async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
                 new = [
                     c for c in candidates
                     if c.id not in active
-                    and c.id not in processed
                     and not skip_labels.intersection(c.labels)
                 ]
 
@@ -393,7 +465,7 @@ async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
                     candidates=len(candidates),
                     new=len(new),
                     active=len(active),
-                    processed=len(processed),
+                    reviewing=len(review_prs),
                 )
 
                 for issue in new:

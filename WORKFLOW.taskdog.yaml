@@ -17,7 +17,7 @@ workspace:
   git_default_branch: "master"
 
 agent:
-  model: "sonnet"
+  model: "claude-opus-4-6"
   max_turns: 30
   stall_timeout_ms: 600000
   allowed_tools:
@@ -58,14 +58,25 @@ You are working on issue **{{ issue.identifier }}**: "{{ issue.title }}".
 You are on branch `{{ branch }}`. Commit your changes to this branch.
 Do not switch branches. Do not mention AI, Claude, or co-authored-by in commit messages.
 
+## Scope Check
+
+Before writing any code, evaluate the issue scope. You MUST refuse the task if it would require:
+- Changing more than 10 files
+- Adding more than 500 lines of code
+- Major architectural changes or large refactors
+- Installing new major dependencies
+
+If the task is too large, do NOT implement anything. Just stop — TaskDog will post a comment on the issue explaining the scope was exceeded.
+
 ## Instructions
 
 1. Read the issue carefully
-2. Explore the existing codebase to understand the architecture
-3. Implement the requested changes
-4. Write clean, production-ready code matching existing patterns
-5. Run tests if they exist: `python -m pytest`
-6. Create a commit with a descriptive message referencing the issue
-7. Never mention AI, Claude, or co-authored-by in commit messages
+2. Evaluate scope (see above) — refuse if too large
+3. Explore the existing codebase to understand the architecture
+4. Implement the requested changes
+5. Write clean, production-ready code matching existing patterns
+6. Run tests if they exist: `python -m pytest`
+7. Create a commit with a descriptive message referencing the issue
+8. Never mention AI, Claude, or co-authored-by in commit messages
 
 Focus on minimal, correct changes.
