@@ -184,17 +184,21 @@ class WorkspaceManager:
             },
             timeout=30.0,
         ) as client:
+            pr_body: dict = {
+                "title": f"{issue.identifier}: {issue.title}",
+                "head": branch,
+                "base": base,
+                "body": (
+                    f"Resolves {issue.identifier}\n\n"
+                    f"Automated by [TaskDog](https://taskdog.dev)"
+                ),
+            }
+            labels = self._config.workspace.pr_labels
+            if labels:
+                pr_body["labels"] = labels
             resp = await client.post(
                 f"/repos/{owner}/{repo}/pulls",
-                json={
-                    "title": f"{issue.identifier}: {issue.title}",
-                    "head": branch,
-                    "base": base,
-                    "body": (
-                        f"Resolves {issue.identifier}\n\n"
-                        f"Automated by [TaskDog](https://taskdog.dev)"
-                    ),
-                },
+                json=pr_body,
             )
             if resp.status_code == 201:
                 pr_url = resp.json()["html_url"]
