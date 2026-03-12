@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import sys
 from pathlib import Path
 from typing import Annotated, Optional
@@ -13,6 +14,7 @@ import typer
 
 from taskdog.config import parse_workflow_file, TaskdogConfig
 from taskdog.events import LogEventBus
+from taskdog.models import NormalizedIssue
 from taskdog.prompt import render_prompt
 from taskdog.runner import ClaudeCliRunner
 from taskdog.workspace import WorkspaceManager
@@ -74,6 +76,20 @@ def run(
 
 
 @app.command()
+def start(
+    workflows: Annotated[
+        list[Path],
+        typer.Option("--workflow", "-w", help="Path(s) to WORKFLOW.yaml files"),
+    ] = [Path("WORKFLOW.yaml")],
+    log_level: Annotated[str, typer.Option("--log-level", "-l")] = "INFO",
+) -> None:
+    """Start the daemon — poll for issues and dispatch agents."""
+    _configure_logging(level=log_level)
+    configs = [parse_workflow_file(w) for w in workflows]
+    asyncio.run(_start_all(configs))
+
+
+@app.command()
 def validate(
     workflow: Annotated[
         Path,
@@ -105,6 +121,111 @@ def list_trackers() -> None:
         typer.echo(f"  - {name}")
 
 
+# ---------------------------------------------------------------------------
+# Shared dispatch logic
+# ---------------------------------------------------------------------------
+
+async def _dispatch_issue(
+    config: TaskdogConfig,
+    tracker: object,
+    issue: NormalizedIssue,
+) -> bool:
+    """Run agent on a single issue. Returns True on success."""
+    log = structlog.get_logger("taskdog.dispatch")
+    events = LogEventBus()
+    tc = config.tracker
+
+    log.info(
+        "issue.dispatching",
+        identifier=issue.identifier,
+        title=issue.title,
+    )
+
+    # Transition to in-progress: remove trigger label, add in-progress label
+    try:
+        await tracker.set_label(issue.id, tc.label_in_progress)
+        await tracker.remove_label(issue.id, tc.label)
+    except Exception:
+        log.warning("label.transition_failed", issue_id=issue.id, state="in-progress")
+
+    ws_mgr = WorkspaceManager(config)
+    workspace = await ws_mgr.ensure_workspace(issue)
+    log.info("workspace.ready", path=workspace.path, branch=workspace.git_branch)
+
+    prompt = render_prompt(config.prompt_template, issue, branch=workspace.git_branch)
+
+    runner = ClaudeCliRunner(
+        model=config.agent.model,
+        allowed_tools=config.agent.allowed_tools or None,
+        stall_timeout_ms=config.agent.stall_timeout_ms,
+        env=config.agent_env,
+    )
+
+    result = await runner.run(
+        issue=issue,
+        workspace=workspace,
+        prompt=prompt,
+        max_turns=config.agent.max_turns,
+    )
+
+    await events.emit("agent.finished", {
+        "issue_id": issue.id,
+        "identifier": issue.identifier,
+        "success": result.success,
+        "session_id": result.session_id,
+        "num_turns": result.num_turns,
+        "duration_ms": result.duration_ms,
+        "cost_usd": result.cost_usd,
+    })
+
+    if result.success:
+        log.info("run.success", issue_id=issue.id)
+        pr_url = await ws_mgr.push_and_create_pr(workspace, issue)
+        if pr_url:
+            log.info("pr.created", url=pr_url)
+
+        # Transition to done
+        try:
+            await tracker.remove_label(issue.id, tc.label_in_progress)
+            await tracker.set_label(issue.id, tc.label_done)
+        except Exception:
+            log.warning("label.transition_failed", issue_id=issue.id, state="done")
+
+        # Post completion summary comment
+        duration_s = result.duration_ms / 1000.0
+        cost_str = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
+        comment_lines = [
+            "**TaskDog** completed this issue.",
+            "",
+            f"- Turns: {result.num_turns}",
+            f"- Duration: {duration_s:.1f}s",
+            f"- Cost: {cost_str}",
+        ]
+        if pr_url:
+            comment_lines.append(f"- PR: {pr_url}")
+        try:
+            await tracker.add_comment(issue.id, "\n".join(comment_lines))
+        except Exception:
+            log.warning("comment.failed", issue_id=issue.id)
+
+        return True
+    else:
+        log.error("run.failed", issue_id=issue.id, error=result.error_message)
+
+        # Transition to failed
+        try:
+            await tracker.remove_label(issue.id, tc.label_in_progress)
+            await tracker.set_label(issue.id, tc.label_failed)
+        except Exception:
+            log.warning("label.transition_failed", issue_id=issue.id, state="failed")
+
+        return False
+
+
+# ---------------------------------------------------------------------------
+# One-shot mode
+# ---------------------------------------------------------------------------
+
 async def _run_single(
     config: TaskdogConfig,
     issue_id: str,
@@ -112,14 +233,11 @@ async def _run_single(
     dry_run: bool = False,
 ) -> None:
     log = structlog.get_logger("taskdog.run")
-    events = LogEventBus()
 
-    # Create tracker
     tracker_kwargs = _tracker_kwargs(config)
     tracker = create_tracker(config.tracker.kind, **tracker_kwargs)
 
     try:
-        # Fetch issue
         issue = await tracker.fetch_issue_by_id(issue_id)
         if issue is None:
             log.error("Issue not found", issue_id=issue_id)
@@ -132,55 +250,174 @@ async def _run_single(
             state=issue.state,
         )
 
-        # Render prompt
-        prompt = render_prompt(config.prompt_template, issue)
-
         if dry_run:
+            prompt = render_prompt(config.prompt_template, issue)
             typer.echo("\n--- Rendered Prompt ---")
             typer.echo(prompt)
             typer.echo("--- End Prompt ---\n")
             return
 
-        # Ensure workspace
-        ws_mgr = WorkspaceManager(config)
-        workspace = await ws_mgr.ensure_workspace(issue)
-        log.info("workspace.ready", path=workspace.path)
-
-        # Run agent
-        runner = ClaudeCliRunner(
-            model=config.agent.model,
-            allowed_tools=config.agent.allowed_tools or None,
-            stall_timeout_ms=config.agent.stall_timeout_ms,
-            env=config.agent_env,
-        )
-
-        result = await runner.run(
-            issue=issue,
-            workspace=workspace,
-            prompt=prompt,
-            max_turns=config.agent.max_turns,
-        )
-
-        await events.emit("agent.finished", {
-            "issue_id": issue.id,
-            "identifier": issue.identifier,
-            "success": result.success,
-            "session_id": result.session_id,
-            "num_turns": result.num_turns,
-            "duration_ms": result.duration_ms,
-            "cost_usd": result.cost_usd,
-        })
-
-        if result.success:
-            log.info("run.success", issue_id=issue.id)
-            if result.result_text:
-                typer.echo(f"\n{result.result_text}")
-        else:
-            log.error("run.failed", error=result.error_message)
+        success = await _dispatch_issue(config, tracker, issue)
+        if not success:
             raise typer.Exit(1)
 
     finally:
         await tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# Poll loop (daemon mode)
+# ---------------------------------------------------------------------------
+
+async def _start_all(configs: list[TaskdogConfig]) -> None:
+    """Run poll loops for all workflows concurrently."""
+    log = structlog.get_logger("taskdog.daemon")
+    shutdown = asyncio.Event()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: (shutdown.set(), log.info("shutdown.requested")))
+
+    tasks = [
+        asyncio.create_task(_poll_loop(config, shutdown))
+        for config in configs
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        pass
+
+
+async def _cleanup_stale_in_progress(
+    config: TaskdogConfig,
+    tracker: object,
+    log: object,
+) -> None:
+    """On daemon startup, mark any stale in-progress issues as failed.
+
+    A stale issue is one that still has the in-progress label from a previous
+    (crashed or killed) daemon process. Since we just started, no agent is
+    actively working on them.
+    """
+    tc = config.tracker
+    try:
+        stale = await tracker.fetch_candidates(
+            active_states=tc.active_states,
+            label=tc.label_in_progress,
+        )
+    except Exception:
+        log.warning("stale_cleanup.fetch_failed")
+        return
+
+    for issue in stale:
+        log.warning(
+            "stale.in_progress",
+            issue_id=issue.id,
+            identifier=issue.identifier,
+        )
+        try:
+            await tracker.remove_label(issue.id, tc.label_in_progress)
+            await tracker.set_label(issue.id, tc.label_failed)
+            await tracker.add_comment(
+                issue.id,
+                "**TaskDog**: marked as failed — agent process was interrupted "
+                "(stale in-progress label cleaned up on daemon restart).",
+            )
+        except Exception:
+            log.warning("stale_cleanup.update_failed", issue_id=issue.id)
+
+
+async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
+    repo_id = f"{config.tracker.model_extra.get('owner', '?')}/{config.tracker.model_extra.get('repo', '?')}"
+    log = structlog.get_logger("taskdog.daemon").bind(repo=repo_id)
+    active: set[str] = set()
+    processed: set[str] = set()
+    agent_tasks: set[asyncio.Task] = set()
+    max_concurrent = config.agent.max_concurrent
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    tracker_kwargs = _tracker_kwargs(config)
+    tracker = create_tracker(config.tracker.kind, **tracker_kwargs)
+    interval = config.polling.interval_ms / 1000.0
+
+    log.info(
+        "daemon.started",
+        tracker=config.tracker.kind,
+        label=config.tracker.label,
+        interval_s=interval,
+        max_concurrent=max_concurrent,
+    )
+
+    # Clean up any stale in-progress labels left over from a previous run
+    await _cleanup_stale_in_progress(config, tracker, log)
+
+    async def _run_agent(issue: NormalizedIssue) -> None:
+        async with semaphore:
+            try:
+                await _dispatch_issue(config, tracker, issue)
+            except Exception:
+                log.exception("dispatch.error", issue_id=issue.id)
+            finally:
+                active.discard(issue.id)
+                processed.add(issue.id)
+
+    try:
+        while not shutdown.is_set():
+            # Clean up finished tasks
+            done = {t for t in agent_tasks if t.done()}
+            agent_tasks -= done
+
+            try:
+                candidates = await tracker.fetch_candidates(
+                    active_states=config.tracker.active_states,
+                    label=config.tracker.label,
+                )
+
+                label_ip = config.tracker.label_in_progress
+                label_done = config.tracker.label_done
+                new = [
+                    c for c in candidates
+                    if c.id not in active
+                    and c.id not in processed
+                    and label_ip not in c.labels
+                    and label_done not in c.labels
+                ]
+
+                log.info(
+                    "poll.tick",
+                    candidates=len(candidates),
+                    new=len(new),
+                    active=len(active),
+                    processed=len(processed),
+                )
+
+                for issue in new:
+                    if shutdown.is_set():
+                        break
+                    active.add(issue.id)
+                    task = asyncio.create_task(
+                        _run_agent(issue),
+                        name=f"agent-{issue.id}",
+                    )
+                    agent_tasks.add(task)
+
+            except Exception:
+                log.exception("poll.error")
+
+            try:
+                await asyncio.wait_for(shutdown.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    finally:
+        # Wait for running agents to finish
+        if agent_tasks:
+            log.info("daemon.waiting_for_agents", count=len(agent_tasks))
+            await asyncio.gather(*agent_tasks, return_exceptions=True)
+        log.info("daemon.stopping", active=len(active))
+        await tracker.close()
+        log.info("daemon.stopped")
 
 
 def _tracker_kwargs(config: TaskdogConfig) -> dict:

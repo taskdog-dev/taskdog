@@ -43,18 +43,36 @@ class MemoryTracker:
         self,
         active_states: list[str],
         label: str | None = None,
+        exclude_labels: list[str] | None = None,
     ) -> list[NormalizedIssue]:
+        excluded = set(exclude_labels or [])
         results = []
         for issue in self._issues.values():
             if issue.state not in active_states:
                 continue
             if label and label not in issue.labels:
                 continue
+            if excluded and excluded.intersection(issue.labels):
+                continue
             results.append(issue)
         return results
 
     async def fetch_issue_by_id(self, issue_id: str) -> NormalizedIssue | None:
         return self._issues.get(issue_id)
+
+    async def set_label(self, issue_id: str, label: str) -> None:
+        issue = self._issues.get(issue_id)
+        if issue and label not in issue.labels:
+            self._issues[issue_id] = issue.model_copy(
+                update={"labels": issue.labels + [label]}
+            )
+
+    async def remove_label(self, issue_id: str, label: str) -> None:
+        issue = self._issues.get(issue_id)
+        if issue:
+            self._issues[issue_id] = issue.model_copy(
+                update={"labels": [lbl for lbl in issue.labels if lbl != label]}
+            )
 
     async def add_comment(self, issue_id: str, body: str) -> None:
         self._comments.setdefault(issue_id, []).append(body)

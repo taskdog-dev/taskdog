@@ -33,6 +33,10 @@ class TrackerConfig(BaseModel):
     kind: str
     api_key: str = ""
     label: str = "taskdog"  # Only pick up issues with this label
+    label_in_progress: str = "taskdog:in-progress"
+    label_done: str = "taskdog:done"
+    label_failed: str = "taskdog:failed"
+    stale_timeout_ms: int = 3_600_000  # 1 hour — in-progress labels older than this are cleaned up on startup
     active_states: list[str] = Field(default_factory=lambda: ["open"])
     terminal_states: list[str] = Field(default_factory=lambda: ["closed"])
 
@@ -47,6 +51,8 @@ class WorkspaceConfig(BaseModel):
     root: str = "~/.taskdog/workspaces"
     git_clone_url: str | None = None
     git_default_branch: str = "main"
+    branch_pattern: str = "{issue_id}-{slug}"  # {issue_id}, {slug}, {identifier}
+    branch_prefix: str = "taskdog"  # prepended as prefix/
 
 
 class HooksConfig(BaseModel):

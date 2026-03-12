@@ -22,6 +22,7 @@ class NormalizedIssue(BaseModel):
     labels: list[str] = Field(default_factory=list)
     url: str = ""
     created_at: datetime | None = None
+    updated_at: datetime | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

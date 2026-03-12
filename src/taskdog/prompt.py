@@ -17,10 +17,12 @@ def render_prompt(
     template_str: str,
     issue: NormalizedIssue,
     attempt: int | None = None,
+    branch: str | None = None,
 ) -> str:
     """Render the WORKFLOW.yaml prompt template with issue context."""
     template = _ENV.from_string(template_str)
     return template.render(
         issue=issue,
         attempt=attempt,
+        branch=branch,
     )

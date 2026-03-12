@@ -20,12 +20,24 @@ class TrackerPlugin(Protocol):
         self,
         active_states: list[str],
         label: str | None = None,
+        exclude_labels: list[str] | None = None,
     ) -> list[NormalizedIssue]:
-        """Return issues in active states, optionally filtered by label."""
+        """Return issues in active states, optionally filtered by label.
+
+        Issues that carry any label in ``exclude_labels`` are omitted.
+        """
         ...
 
     async def fetch_issue_by_id(self, issue_id: str) -> NormalizedIssue | None:
         """Fetch a single issue by its tracker-native ID."""
+        ...
+
+    async def set_label(self, issue_id: str, label: str) -> None:
+        """Add a label to the issue."""
+        ...
+
+    async def remove_label(self, issue_id: str, label: str) -> None:
+        """Remove a label from the issue. No-op if the label is not present."""
         ...
 
     async def add_comment(self, issue_id: str, body: str) -> None:
