@@ -158,7 +158,7 @@ async def _dispatch_issue(
         model=config.agent.model,
         allowed_tools=config.agent.allowed_tools or None,
         stall_timeout_ms=config.agent.stall_timeout_ms,
-        env=config.agent_env,
+        env={**config.service_git_env, **config.agent_env},
     )
 
     result = await runner.run(

@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: "github"
-  api_key: $GITHUB_TOKEN
+  api_key: $GITHUB_API_TOKEN
   owner: "taskdog-dev"
   repo: "taskdog"
   label: "taskdog"
@@ -15,6 +15,8 @@ workspace:
   root: "~/.taskdog/workspaces"
   git_clone_url: "https://github.com/taskdog-dev/taskdog.git"
   git_default_branch: "master"
+  service_name: "TaskDog"
+  service_email: "bot@taskdog.dev"
 
 agent:
   model: "sonnet"
