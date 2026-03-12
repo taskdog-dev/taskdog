@@ -184,18 +184,20 @@ async def _dispatch_issue(
         if pr_url:
             log.info("pr.created", url=pr_url)
 
-        # Transition to done
+        # Transition: in-progress → review (PR awaiting review) or done (no PR)
+        target_label = tc.label_review if pr_url else tc.label_done
         try:
             await tracker.remove_label(issue.id, tc.label_in_progress)
-            await tracker.set_label(issue.id, tc.label_done)
+            await tracker.set_label(issue.id, target_label)
         except Exception:
-            log.warning("label.transition_failed", issue_id=issue.id, state="done")
+            log.warning("label.transition_failed", issue_id=issue.id, state=target_label)
 
-        # Post completion summary comment
+        # Post summary comment
         duration_s = result.duration_ms / 1000.0
         cost_str = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
+        status = "PR created, awaiting review." if pr_url else "completed (no PR created)."
         comment_lines = [
-            "**TaskDog** completed this issue.",
+            f"**TaskDog** {status}",
             "",
             f"- Turns: {result.num_turns}",
             f"- Duration: {duration_s:.1f}s",
@@ -373,14 +375,17 @@ async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
                     label=config.tracker.label,
                 )
 
-                label_ip = config.tracker.label_in_progress
-                label_done = config.tracker.label_done
+                skip_labels = {
+                    config.tracker.label_in_progress,
+                    config.tracker.label_review,
+                    config.tracker.label_done,
+                    config.tracker.label_failed,
+                }
                 new = [
                     c for c in candidates
                     if c.id not in active
                     and c.id not in processed
-                    and label_ip not in c.labels
-                    and label_done not in c.labels
+                    and not skip_labels.intersection(c.labels)
                 ]
 
                 log.info(

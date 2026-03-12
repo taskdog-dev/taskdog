@@ -26,6 +26,20 @@ Label issue "taskdog"  →  TaskDog clones repo  →  AI writes the fix  →  PR
 
 Engineers stay in control. TaskDog just does the work.
 
+## Issue lifecycle
+
+TaskDog tracks issue state via labels:
+
+```
+  taskdog                →  issue picked up by TaskDog
+  taskdog:in-progress    →  agent is working on it
+  taskdog:review         →  PR created, awaiting review
+  taskdog:done           →  PR merged, issue closed
+  taskdog:failed         →  agent failed or PR closed without merge
+```
+
+To retry a failed issue, remove `taskdog:failed` and add `taskdog`.
+
 ## Quick start
 
 ```bash
@@ -48,11 +62,22 @@ taskdog start
 ## Docker
 
 ```bash
-cp .env.example .env
-# Edit .env with your tokens
+# Build once
+make build
 
-docker compose up        # daemon with live reload
-docker compose run taskdog taskdog run --issue 42   # one-shot
+# Run daemon (polls all configured repos)
+make run
+
+# Run on a single issue
+make run-issue ISSUE=42
+
+# Preview rendered prompt
+make dry-run ISSUE=42
+
+# Other commands
+make validate
+make shell
+make clean
 ```
 
 ## Configuration
@@ -71,17 +96,36 @@ tracker:
 workspace:
   root: "~/.taskdog/workspaces"
   git_clone_url: "https://github.com/myorg/myrepo.git"
+  git_default_branch: "main"
+  branch_prefix: "taskdog"        # branch: taskdog/1-fix-login-bug
+  branch_pattern: "{issue_id}-{slug}"
 
 agent:
   model: "sonnet"
   max_turns: 20
+  max_concurrent: 3
+  allowed_tools:
+    - "Read"
+    - "Write"
+    - "Edit"
+    - "Bash"
+    - "Glob"
+    - "Grep"
 ---
 
 You are working on issue **{{ issue.identifier }}**: "{{ issue.title }}".
 
 {{ issue.description }}
 
-Implement the changes and create a clean commit.
+You are on branch `{{ branch }}`. Commit your changes to this branch.
+```
+
+### Multi-repo support
+
+Poll multiple repos concurrently with multiple `-w` flags:
+
+```bash
+taskdog start -w WORKFLOW.backend.yaml -w WORKFLOW.frontend.yaml
 ```
 
 ## Tracker plugins
@@ -123,6 +167,7 @@ Config (WORKFLOW.yaml or API)
 - Per-issue workspace isolation
 - All changes come as PRs for human review
 - No data sent to any control plane (local mode)
+- Tokens masked in all log output
 
 ## License
 

@@ -34,6 +34,7 @@ class TrackerConfig(BaseModel):
     api_key: str = ""
     label: str = "taskdog"  # Only pick up issues with this label
     label_in_progress: str = "taskdog:in-progress"
+    label_review: str = "taskdog:review"
     label_done: str = "taskdog:done"
     label_failed: str = "taskdog:failed"
     stale_timeout_ms: int = 3_600_000  # 1 hour — in-progress labels older than this are cleaned up on startup
