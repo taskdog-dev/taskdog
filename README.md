@@ -32,7 +32,7 @@ TaskDog tracks issue state via labels:
 
 ```
   taskdog                →  issue picked up by TaskDog
-  taskdog:in-progress    →  agent is working on it
+  taskdog:wip            →  agent is working on it
   taskdog:review         →  PR created, awaiting review
   taskdog:done           →  PR merged, issue closed
   taskdog:failed         →  agent failed or PR closed without merge

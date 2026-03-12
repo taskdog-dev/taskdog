@@ -141,12 +141,12 @@ async def _dispatch_issue(
         title=issue.title,
     )
 
-    # Transition to in-progress: remove trigger label, add in-progress label
+    # Transition to wip: remove trigger label, add wip label
     try:
         await tracker.set_label(issue.id, tc.label_in_progress)
         await tracker.remove_label(issue.id, tc.label)
     except Exception:
-        log.warning("label.transition_failed", issue_id=issue.id, state="in-progress")
+        log.warning("label.transition_failed", issue_id=issue.id, state="wip")
 
     ws_mgr = WorkspaceManager(config)
     workspace = await ws_mgr.ensure_workspace(issue)
@@ -184,7 +184,7 @@ async def _dispatch_issue(
         if pr_url:
             log.info("pr.created", url=pr_url)
 
-        # Transition: in-progress → review (PR awaiting review) or done (no PR)
+        # Transition: wip → review (PR awaiting review) or done (no PR)
         target_label = tc.label_review if pr_url else tc.label_done
         try:
             await tracker.remove_label(issue.id, tc.label_in_progress)
@@ -295,9 +295,9 @@ async def _cleanup_stale_in_progress(
     tracker: object,
     log: object,
 ) -> None:
-    """On daemon startup, mark any stale in-progress issues as failed.
+    """On daemon startup, mark any stale wip issues as failed.
 
-    A stale issue is one that still has the in-progress label from a previous
+    A stale issue is one that still has the wip label from a previous
     (crashed or killed) daemon process. Since we just started, no agent is
     actively working on them.
     """
@@ -323,7 +323,7 @@ async def _cleanup_stale_in_progress(
             await tracker.add_comment(
                 issue.id,
                 "**TaskDog**: marked as failed — agent process was interrupted "
-                "(stale in-progress label cleaned up on daemon restart).",
+                "(stale wip label cleaned up on daemon restart).",
             )
         except Exception:
             log.warning("stale_cleanup.update_failed", issue_id=issue.id)
@@ -350,7 +350,7 @@ async def _poll_loop(config: TaskdogConfig, shutdown: asyncio.Event) -> None:
         max_concurrent=max_concurrent,
     )
 
-    # Clean up any stale in-progress labels left over from a previous run
+    # Clean up any stale wip labels left over from a previous run
     await _cleanup_stale_in_progress(config, tracker, log)
 
     async def _run_agent(issue: NormalizedIssue) -> None:
