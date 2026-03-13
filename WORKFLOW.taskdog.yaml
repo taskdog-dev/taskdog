@@ -14,7 +14,7 @@ polling:
 workspace:
   root: "~/.taskdog/workspaces"
   git_clone_url: "https://github.com/taskdog-dev/taskdog.git"
-  git_default_branch: "master"
+  git_default_branch: "main"
 
 agent:
   model: "claude-opus-4-6"
